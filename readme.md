@@ -23,8 +23,6 @@ The [script qqtheader.r]( qqtheader.r) contains a number of functions used in th
 ### local files
 
 There are a number of references to local files that are not directly accessible on the internet:
-* ~/dropbox/cliodata/allcliodata_raw.csv // should be in new composite folder
-* ~/dropbox/viennapaper/data/comped.csv // ask Lotte
-* ~/dropbox/viennapaper/data/europeancities.csv // xls file at
-
-
+* allcliodata_raw.csv - file with all data from the [clio-infra project](https://www.clio-infra.eu)
+* comped.csv - to be published dataset on compulsory education laws.
+* europeancities.csv - based xls file at the [CGEH datahub](http://www.cgeh.nl/urbanisation-hub-clio-infra-database-urban-settlement-sizes-1500-2000)
