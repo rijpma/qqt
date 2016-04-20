@@ -41,7 +41,7 @@ ss$patriloc[grepl('usa-18[5-7]', ss$sample)] <- NA
 ss$patri <- ss$maledom / 4 + ss$gendom / 3 + # why not 4, 4 components?
             ss$patriloc + ss$sonpref / 2
 ss$patri <- round(ss$patri)
-write.csv(ss, 'tabfigs/sumstatus_withpatrind.csv', row.names=F)
+# write.csv(ss, 'tabfigs/sumstatus_withpatrind.csv', row.names=F)
 
 datapath <- '~/downloads/data/qqt/cleandata/'
 files <- list.files(datapath)
@@ -144,7 +144,7 @@ us10lit <- us1910[age > 9 & age < 16 & !is.na(age), ]
 litdats <- list(au10lit, ca91lit, ca01lit, hu69lit, ie01lit, ie11lit, 
   ja84lit, kr18lit, us70lit, us80lit, us00lit, us10lit)
 
-pdf('tabfigs/qqt_enrol_allsmpls.pdf', paper='a4r', width=0, height=0)
+# pdf('tabfigs/qqt_enrol_allsmpls.pdf', paper='a4r', width=0, height=0)
 par(mfrow=c(3, 7), mar=c(1, 2, 3, 0.5), font.main=1)
 for (dat in enrldats){
   ttl <- paste(unique(dat$iso3), paste(unique(range(dat$year)), collapse='-'))
@@ -158,7 +158,7 @@ for (dat in enrldats){
 }
 dev.off()
 
-pdf('tabfigs/qqt_lit_allsmpls.pdf', width=8, height=7)
+# pdf('tabfigs/qqt_lit_allsmpls.pdf', width=8, height=7)
 par(mfrow=c(3, 4), mar=c(1, 2, 3, 0.5), font.main=1)
 for (dat in litdats){
   ttl <- paste(unique(dat$iso3), paste(unique(range(dat$year)), collapse='-'))
@@ -172,12 +172,112 @@ for (dat in litdats){
 }
 dev.off()
 
+rows <- sapply(enrldats, nrow)
+vrbs <- c("enrol", "nsib", "hhid", "age", "male", "nserv", "urban",
+  "birthorder", "motheragefirstchild", "spousagegap", "hhid", "smpl")
+cols <- length(vrbs)
+
+mstr <- matrix(NA, nrow=sum(rows), ncol=cols)
+mstr <- as.data.frame(mstr)
+names(mstr) <- vrbs
+i <- 1
+for (dat in enrldats){
+    # loop & fill faster than rbind etc.
+    mstr[i:(i + nrow(dat) - 1), ] <- as.data.frame(dat)[, vrbs]
+    cat(i, ' through ')
+    i <- i + nrow(dat) + 1
+    cat(i, '\n')
+}
+dim(mstr)
+mstr <- mstr[complete.cases(mstr), ]
+dim(mstr)
+mstr$smpln <- as.numeric(as.factor(mstr$smpl))
+table(mstr$smpln)
+set.seed(123)
+mstr <- mstr[sample(1:nrow(mstr), 50000), ]
+table(mstr$smpln)
+mstr <- mstr[order(mstr$smpln), ]
+
+# careful, 10000s for 50k obs, 27h for full thing
+# careful for lack of hh clustering
+# Pr(y_i=1) = logit^{-1}(\alpha_{j[i]} + \beta_{j[i]}x_i)
+# \beta \sim N(mu_d, sigma_d)
+# \alpha \sim N(mu_a, sigma_a)
+# \mu_d ~ normal(0, 100)
+# \mu_a ~ normal(0, 100)
+datlist <- list(N=nrow(mstr), D=1, K=7, L=length(unique(mstr$smpln)),
+    enrol=mstr$enrol, smpl=mstr$smpln, 
+    nsib=mstr[, 'nsib', drop=F], 
+    x=mstr[, vrbs[4:10], drop=F])
+library(rstan)
+options(mc.cores=parallel::detectCores())
+fit <- stan('scripts/hierlogit.stan', data=datlist, iter=1000)
+save(fit=fit, file='hierlogitpostr.rdata')
+load('hierlogitpostr.rdata') # returns fit
+
+betahat <- sumstatsDF(extract(fit)$beta)
+gammahat <- sumstatsDF(extract(fit)$gamma)
+ahat <- sumstatsDF(extract(fit)$a)
+rownames(betahat) <- rownames(ahat) <- unique(mstr$smpl)
+
+par(mfrow=c(3, 7), mar=c(1, 2, 3, 1))
+for (smpl in unique(mstr$smpl)){
+        plot(1:10, invlogit(betahat[smpl, 'q50'] * 1:10 + 
+                ahat[smpl, 'q50'] + 
+                sum(gammahat[, 'q50'] * colMeans(mstr[mstr$smpl==smpl, vrbs[4:10]]))),
+        xlab='nsib', ylab='P(enrol)', type='l', main=smpl, cex=0.8)
+}
+betamfx <- list()
+for (smpl in unique(mstr$smpl)){
+    yhat <- ahat[smpl, 'q50'] + 
+        betahat[smpl, 'q50'] * mstr$nsib[mstr$smpl==smpl] + 
+        rowSums(gammahat[, 'q50'] * mstr[mstr$smpl==smpl, vrbs[4:10]])
+    betamfx[[smpl]] <- mean(dlogis(yhat)) * c(ahat[smpl, 'q50'], betahat[smpl, 'q50'], gammahat[, 'q50'])
+}
+betamfx_nsib <- sapply(betamfx, function(x) x[2])
+
+betahat$mfx <- betamfx_nsib
+betahat <- betahat[order(betahat$q50), ]
+
+# overall
+data.frame(vrbs[4:10],
+    est=get_posterior_mean(fit, 'gamma')[, 'mean-all chains'],
+    sd=apply(extract(fit)$gamma, 2, sd))
+
+pdf('tabfigs/multilev.pdf', height=5)
+    par(mar=c(3, 14, 1, 1))
+    dotchart(betahat$q50, xlim=range(betahat))
+    axis(side=2, at=seq_along(betahat$q50), labels=rownames(betahat), las=1, cex=0.8)
+    segments(betahat$q05, 1:21, betahat$q95)
+    abline(v=0, col='gray')
+
+    dotchart(betahat$q50, xlim=range(betahat))
+    axis(side=2, at=seq_along(betahat$q50), labels=rownames(betahat), las=1, cex=0.8)
+    segments(betahat$q05, 1:21, betahat$q95)
+    muhat <- sumstatsDF(extract(fit)$mu)
+    rect(xleft=muhat[2], xright=muhat[4], ybottom=0.5, ytop=21.5, border=2)
+
+    dotchart(betahat$mfx, xlim=c(-0.015, 0.005))
+    axis(side=2, at=seq_along(betahat$q50), labels=rownames(betahat), las=1, cex=0.8)
+dev.off()
+
+
+pooled <- glm(enrol ~ nsib + age + male + nserv + urban 
+    + birthorder + motheragefirstchild + spousagegap, data=mstr, family=binomial(link='logit'))
+mfx(link='logit', pooled)
+
 enrl <- NULL
+originalests <- originalses <- NULL
 for (dat in enrldats){  
-  m <- glm(enrol ~ nsib - hhid + age + male + nserv + urban
+  m <- glm(enrol ~ nsib + age + male + nserv + urban
     + factor(birthorder)
     + motheragefirstchild + spousagegap - hhid, 
     data=dat, family=binomial(link='logit'))
+
+  originalests <- rbind(originalests, m$coef[c('(Intercept)', 'nsib')])
+  originalses <- rbind(originalses, summary(m)$coefficients[,2][c('(Intercept)', 'nsib')])
+  rownames(originalests)[nrow(originalests)] <- unique(dat$smpl)
+
   mbas <- logitmfxest2(m, clustervar1='hhid')
   male <- mbas$mfx['male', 1:2]
   nsib <- mbas$mfx['nsib', 1:2]
@@ -267,6 +367,49 @@ segments(enrl$nsib_est + 2*enrl$nsib_stder, 1:nrow(enrl), enrl$nsib_est - 2*enrl
 abline(v=0)
 dev.off()
 
+rownames(originalses) <- rownames(originalests)
+originalests <- as.data.frame(originalests)
+originalses <- as.data.frame(originalses)
+originalests <- originalests[match(rownames(betahat), rownames(originalests)), ]
+originalses <- originalses[match(rownames(betahat), rownames(originalses)), ]
+
+pdf('tabfigs/multilev2.pdf', height=5)
+par(mar=c(3, 14, 1, 1))
+dotchart(betahat$q50, xlim=range(betahat))
+axis(side=2, at=seq_along(betahat$q50), labels=rownames(betahat), las=1, cex=0.8)
+segments(betahat$q05, 1:21, betahat$q95)
+abline(v=0, col='gray')
+
+dotchart(betahat$q50, xlim=range(betahat))
+axis(side=2, at=seq_along(betahat$q50), labels=rownames(betahat), las=1, cex=0.8)
+segments(betahat$q05, 1:21, betahat$q95)
+muhat <- sumstatsDF(extract(fit)$mu)
+rect(xleft=muhat[2], xright=muhat[4], ybottom=0.5, ytop=21.5, border=2)
+
+dotchart(betahat$q50, xlim=range(betahat))
+points(originalests$nsib, seq_along(originalests$nsib), col='gray')
+axis(side=2, at=seq_along(betahat$q50), labels=rownames(betahat), las=1, cex=0.8)
+segments(betahat$q05, 1:21, betahat$q95)
+abline(v=0, col='gray')
+
+dotchart(originalests$nsib, labels=rownames(originalests), xlim=c(range(betahat)))
+segments(originalests$nsib + 2*originalses$nsib, 1:nrow(originalests), originalests$nsib - 2*originalses$nsib, 1:nrow(originalests), col='gray')
+# dotplot(x=enrl$nsib_est, ses=enrl$nsib_stder*2, labels=rownames(enrl),
+#   mar=c(4, 9, 3.5, 0.5))
+abline(v=0)
+
+dev.off()
+
+
+pdf('tabfigs/nsibcoefs_nomfx.pdf')
+par(mfrow=c(1,1))
+dotchart(originalests$nsib, labels=rownames(originalests), xlim=c(range(betahat)))
+segments(originalests$nsib + 2*originalses$nsib, 1:nrow(originalests), originalests$nsib - 2*originalses$nsib, 1:nrow(originalests), col='gray')
+# dotplot(x=enrl$nsib_est, ses=enrl$nsib_stder*2, labels=rownames(enrl),
+#   mar=c(4, 9, 3.5, 0.5))
+abline(v=0)
+dev.off()
+
 pdf('tabfigs/malecoefs.pdf')
 par(mfrow=c(1,1))
 dotchart(enrl$male_est, labels=rownames(enrl))
@@ -314,6 +457,22 @@ segments(enrl$nsis_est + 2*enrl$nsis_stder, 1:nrow(enrl)-0.25, enrl$nsis_est - 2
 abline(v=0)
 dev.off()
 
+ivlist <- list()
+for (dat in enrldats){  
+    smpl <- unique(dat$smpl)
+    try(
+        ivlist[[smpl]] <- ivreg(enrol ~ nsib + age + male + nserv + urban
+            + factor(birthorder)
+            + motheragefirstchild + spousagegap 
+            - hhid | . -nsib + hhtwin, data=dat)
+    )
+}
+ivests <- sapply(ivlist, function(m) m$coef['nsib'])
+names(ivests) <- names(ivlist)
+sort(enrl[names(ivests),1] - ivests)
+
+dotchart(sort(ivests))
+abline(v=0)
 parlits <- NULL
 names <- NULL
 for (dat in enrldats){

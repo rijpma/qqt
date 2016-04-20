@@ -1,3 +1,15 @@
+sumstats <- function(x){
+    out <- c(mean(x), quantile(x, c(0.05, 0.5, 0.95)))
+    names(out) <- c('mean', 'q05', 'q50', 'q95')
+    return(out)
+}
+
+sumstatsDF <- function(coda){
+    out <- apply(coda, 2, sumstats)
+    out <- t(out)
+    out <- as.data.frame(out)
+    return(out)
+}
 mfx <- function(fit, link){
       if (link=='logit') return(mean(dlogis(predict(fit, type='link'))) * coef(fit))
       if (link=='probit') return(mean(dnorm(predict(fit, type='link'))) * coef(fit))
